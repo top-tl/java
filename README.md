@@ -1,89 +1,130 @@
-# TOP.TL Java SDK
+# toptl
 
-[![Maven Central](https://img.shields.io/maven-central/v/tl.top/toptl)](https://central.sonatype.com/artifact/tl.top/toptl)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Java 11+](https://img.shields.io/badge/Java-11%2B-blue)](https://openjdk.org/)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.top-tl/toptl.svg?label=maven%20central&color=3775a9)](https://central.sonatype.com/artifact/io.github.top-tl/toptl)
+[![Java](https://img.shields.io/badge/Java-17%2B-blue.svg?color=f89820)](https://openjdk.org/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+[![TOP.TL](https://img.shields.io/badge/top.tl-developers-2ec4b6)](https://top.tl/developers)
 
-Official Java SDK for the [TOP.TL](https://top.tl) Telegram Directory API.
+The official Java SDK for **TOP.TL** — post stats, check votes, and manage vote webhooks for your Telegram bot, channel, or group listed on [top.tl](https://top.tl).
 
-## Installation
+## Install
 
 ### Maven
 
 ```xml
 <dependency>
-    <groupId>tl.top</groupId>
+    <groupId>io.github.top-tl</groupId>
     <artifactId>toptl</artifactId>
-    <version>1.0.0</version>
+    <version>0.1.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'tl.top:toptl:1.0.0'
+implementation "io.github.top-tl:toptl:0.1.0"
 ```
 
-## Quick Start
+Requires Java 17+. Depends only on `jackson-databind`; HTTP uses the JDK's built-in `java.net.http.HttpClient`.
+
+## Quickstart
+
+Get an API key at https://top.tl/profile → **API Keys**. Scope the key to your listing and the operations you need (`listing:read`, `listing:write`, `votes:read`, `votes:check`).
 
 ```java
-import tl.top.toptl.TopTL;
-import tl.top.toptl.models.*;
+import io.github.toptl.TopTL;
+import io.github.toptl.model.*;
 
-TopTL client = new TopTL("your-api-token");
+TopTL client = new TopTL("toptl_xxx");
 
-// Get listing info
+// Fetch a listing
 Listing listing = client.getListing("mybot");
-System.out.println(listing.getTitle() + " has " + listing.getVotes() + " votes");
+System.out.println(listing.getTitle() + " — " + listing.getVoteCount() + " votes");
 
-// Get votes
-VotesResponse votes = client.getVotes("mybot");
-System.out.println("Total votes: " + votes.getTotal());
+// Post stats on a listing you own
+client.postStats("mybot", new StatsPayload()
+    .memberCount(5_000L)
+    .groupCount(1_200L)
+    .channelCount(300L));
 
-// Check if a user voted
-VoteCheck check = client.hasVoted("mybot", "123456789");
-if (check.isHasVoted()) {
-    System.out.println("User has voted!");
+// Reward users who voted
+VoteCheck check = client.hasVoted("mybot", 123456789L);
+if (check.isVoted()) {
+    grantPremium(123456789L);
 }
-
-// Post stats
-client.postStats("mybot", new StatsUpdate(50000L, null));
-
-// Get global stats
-Stats stats = client.getStats();
-System.out.println("Total listings on TOP.TL: " + stats.getTotalListings());
 ```
 
 ## Autoposter
 
-Automatically post stats at a regular interval:
+For long-running bot processes, the SDK ships with a background autoposter that calls `postStats` on an interval and only hits the API when the stats actually changed:
 
 ```java
-import tl.top.toptl.TopTL;
-import tl.top.toptl.TopTLAutoposter;
-import tl.top.toptl.models.StatsUpdate;
+import io.github.toptl.Autoposter;
+import io.github.toptl.TopTL;
+import io.github.toptl.model.StatsPayload;
 import java.util.concurrent.TimeUnit;
 
-TopTL client = new TopTL("your-api-token");
+TopTL client = new TopTL("toptl_xxx");
+Autoposter poster = new Autoposter(client, "mybot",
+    () -> new StatsPayload().memberCount((long) bot.getUserCount()))
+    .onlyOnChange(true)
+    .onError(e -> log.warn("toptl post failed: {}", e.getMessage()));
 
-TopTLAutoposter autoposter = new TopTLAutoposter(client, "mybot", () -> {
-    long memberCount = bot.getGuilds().stream()
-            .mapToLong(g -> g.getMemberCount())
-            .sum();
-    return new StatsUpdate(memberCount, null);
-});
-
-autoposter.onError(e -> System.err.println("Failed to post stats: " + e.getMessage()));
-autoposter.start(30, TimeUnit.MINUTES);
-
-// When shutting down:
-autoposter.stop();
+poster.start(30, TimeUnit.MINUTES);
+// ...
+poster.stop();
 ```
 
-## Requirements
+For cron-style one-shots, skip the autoposter and call `client.postStats(...)` directly.
 
-- Java 11 or higher (uses `java.net.http.HttpClient`)
+## Vote webhooks
+
+Register a URL TOP.TL will POST to whenever someone votes for your listing:
+
+```java
+client.setWebhook("mybot", "https://mybot.example.com/toptl-vote", "30-day premium");
+
+WebhookTestResult result = client.testWebhook("mybot");
+System.out.println(result.isSuccess() + " " + result.getStatusCode());
+```
+
+## Batch stats
+
+Post stats for up to 25 listings in one request:
+
+```java
+import java.util.List;
+
+client.batchPostStats(List.of(
+    new BatchStatsItem("bot1").memberCount(1_200L),
+    new BatchStatsItem("bot2").memberCount(5_400L)
+));
+```
+
+## Error handling
+
+Every API error throws a subclass of `TopTLException`:
+
+```java
+import io.github.toptl.exception.*;
+
+try {
+    client.postStats("mybot", new StatsPayload().memberCount(5_000L));
+} catch (AuthenticationException e) {
+    // bad key, or missing scope
+} catch (NotFoundException e) {
+    // listing does not exist
+} catch (RateLimitException e) {
+    // back off and retry
+} catch (ValidationException e) {
+    // payload rejected — inspect e.getResponseBody()
+}
+```
+
+## Telegram bot integration
+
+Using [rubenlagus/TelegramBots](https://github.com/rubenlagus/TelegramBots)? Add the [plugin](https://github.com/top-tl/java-telegram-bot) for drop-in auto-posting and vote checks.
 
 ## License
 
-[MIT](LICENSE) - TOP.TL
+MIT — see [LICENSE](./LICENSE).
